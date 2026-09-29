@@ -38,7 +38,9 @@ button,.vocab-card,a.choice,.backup label{-webkit-user-select:none;user-select:n
 .level-progress progress::-webkit-progress-value{background:#68ad82;border-radius:99px}
 .level-progress progress::-moz-progress-bar{background:#68ad82;border-radius:99px}
 .progress-detail{display:block;font-size:.75rem;color:#57706c}
+.progress-link{color:inherit;text-decoration-color:#87a69a;text-underline-offset:3px}.progress-link:hover,.progress-link:focus-visible{color:#176b53}
 .vocab-head .back-link{display:inline-block;text-decoration:none}
+.vocab-level-actions{display:flex;flex-direction:column;align-items:flex-end;gap:10px;text-align:right}.vocab-level-actions .primary{display:inline-block;text-decoration:none}
 #test .actions button:focus-visible{outline:3px solid #153434;outline-offset:3px}
 .home-actions{justify-content:center}
 .home-actions button{flex:0 1 240px;min-height:52px}

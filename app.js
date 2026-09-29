@@ -13,11 +13,36 @@
     const p = old.progress?.[w.id] || old.progress?.[w.hanzi];
     if (p) legacyProgress[w.id] = { ...p };
   }
-  const initial = { version: 2, activeId: 'starter', stroke: false, presets: [{ id: 'starter', name: 'HSK 1', levels: (old.selected?.length ? old.selected : [1]).filter(n => levels.includes(n)), progress: legacyProgress }] };
+  const initial = { version: 3, activeId: 'starter', stroke: false, progress:legacyProgress, testNumber:0, presets: [{ id: 'starter', name: 'HSK 1', levels: (old.selected?.length ? old.selected : [1]).filter(n => levels.includes(n)) }] };
   let state;
   try { state = JSON.parse(localStorage.getItem(KEY)) || initial; } catch { state = initial; }
   if (!Array.isArray(state.presets) || !state.presets.length) state = initial;
   const save = () => localStorage.setItem(KEY, JSON.stringify(state));
+  function ensureSharedProgress() {
+    if (state.version === 3 && state.progress && typeof state.progress === 'object') return false;
+    const shared = state.progress && typeof state.progress === 'object' ? { ...state.progress } : {};
+    const sharedTestNumber = Math.max(0, ...state.presets.map(p => p.testNumber || 0));
+    const attempts = p => (p?.correct || 0) + (p?.incorrect || 0);
+    for (const preset of state.presets) {
+      for (const [wordId, stored] of Object.entries(preset.progress || {})) {
+        if (!shared[wordId] || attempts(stored) > attempts(shared[wordId])) {
+          const progress = { ...stored };
+          if (progress.needsReview) {
+            const remainingTests = Math.max(0, (progress.reviewAfterTest ?? preset.testNumber ?? 0) - (preset.testNumber || 0));
+            progress.reviewAfterTest = sharedTestNumber + remainingTests;
+          }
+          shared[wordId] = progress;
+        }
+      }
+      delete preset.progress;
+      delete preset.testNumber;
+    }
+    state.progress = shared;
+    state.testNumber = sharedTestNumber;
+    state.version = 3;
+    return true;
+  }
+  if (ensureSharedProgress()) save();
   function ensureLevelPresets() {
     const before = JSON.stringify(state);
     for (const level of levels) {
@@ -28,22 +53,16 @@
       const existing = matches.find(p => p.id === state.activeId) || matches[0];
       if (existing) {
         if (matches.length > 1 || existing.levels.length !== included.length) {
-          // Keep the exact pre-migration histories in exports, including conflicts.
+          // Keep duplicate preset configurations visible in exports for recovery.
           state.archivedPresets ||= [];
           for (const preset of matches) state.archivedPresets.push(JSON.parse(JSON.stringify(preset)));
         }
-        existing.progress ||= {};
         for (const duplicate of matches.filter(p => p !== existing)) {
-          for (const [wordId, progress] of Object.entries(duplicate.progress || {})) {
-            const prior = existing.progress[wordId];
-            const attempts = p => (p.correct || 0) + (p.incorrect || 0);
-            if (!prior || attempts(progress) > attempts(prior)) existing.progress[wordId] = progress;
-          }
           if (state.activeId === duplicate.id) state.activeId = existing.id;
           state.presets = state.presets.filter(p => p !== duplicate);
         }
         Object.assign(existing, { name:levelLabel(level), builtinLevel:level, levels:included });
-      } else state.presets.push({ id, name:levelLabel(level), builtinLevel:level, levels:included, progress:{} });
+      } else state.presets.push({ id, name:levelLabel(level), builtinLevel:level, levels:included });
     }
     if (JSON.stringify(state) !== before) save();
   }
@@ -88,6 +107,7 @@
   }
 
   function initStudy() {
+    document.querySelector('#test .note').textContent = 'A missed word returns at a random position in one of your next two tests.';
     const studyRoute = location.pathname.match(/^\/study\/hsk-([1-9]|7-9)(?:\/|\/index\.html)?$/);
     const studyLevel = studyRoute ? (studyRoute[1] === '7-9' ? 7 : Math.min(7, Number(studyRoute[1]))) : null;
     const cardCounts = [10, 20, 30, 40, 50, 60, 100];
@@ -104,7 +124,7 @@
       history.replaceState({ ...history.state, hanziTestGuard:false }, '', location.href);
       history.pushState({ ...history.state, hanziTestGuard:true }, '', location.href);
     }
-    const unfinishedTest = () => sessionActive && index < cards.length;
+    const unfinishedTest = () => sessionActive && sessionResults.length > 0 && index < cards.length;
     function leaveTest() {
       if (unfinishedTest() && !window.confirm('This test is unfinished. No progress from this test will be counted if you leave. Leave the test?')) return false;
       sessionActive = false;
@@ -169,13 +189,17 @@
         return `<${tag} class="choice ${p.id === state.activeId ? 'active' : ''}" data-preset="${escape(p.id)}" ${attributes}><span class="choice-heading"><strong>${escape(p.name)}</strong><span class="choice-status">${p.id === state.activeId ? 'Selected' : 'Select preset'}</span></span><span class="choice-detail">${escape(detail)}</span><span class="choice-metrics"><span><b>${entries.length.toLocaleString()}</b><small>Total words</small></span>${level ? `<span><b>${introduced.length.toLocaleString()}</b><small>New words</small></span>` : ''}<span><b>${characterCount.toLocaleString()}</b><small>${level ? 'New characters' : 'Distinct characters'}</small></span></span></${tag}>`;
       }).join('');
       document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => { state.activeId = b.dataset.preset; save(); renderHome(); });
-      const p = selected(), entries = pool(p), progress = p.progress || {};
+      const p = selected(), entries = pool(p), progress = state.progress;
+      const progressEntries = p.builtinLevel ? words.filter(w => w.level === p.builtinLevel) : entries;
       $('selectedTitle').textContent = p.name;
-      const summary = levelProgress(entries, progress);
-      $('studyProgressPercent').textContent = `${summary.percent}%`;
+      const summary = levelProgress(progressEntries, progress);
+      const progressHeading = $('studyProgressBar').previousElementSibling;
+      progressHeading.innerHTML = p.builtinLevel
+        ? `<a class="progress-link" href="/vocabulary/hsk-${p.builtinLevel === 7 ? '7-9' : p.builtinLevel}/">Progress <b id="studyProgressPercent">${summary.percent}%</b></a>`
+        : `Progress <b id="studyProgressPercent">${summary.percent}%</b>`;
       $('studyProgressBar').value = summary.percent;
       $('studyProgressBar').textContent = `${summary.percent}%`;
-      $('studyProgressDetail').textContent = `${summary.reviewed.toLocaleString()} / ${entries.length.toLocaleString()} reviewed · ${(summary.familiarity * 100).toFixed(1)}% familiarity`;
+      $('studyProgressDetail').textContent = `${summary.reviewed.toLocaleString()} / ${progressEntries.length.toLocaleString()} level words reviewed · ${(summary.familiarity * 100).toFixed(1)}% familiarity`;
       $('strokeToggle').checked = !!state.stroke;
       $('startTest').disabled = !entries.length;
       $('cardCountChips').innerHTML = cardCounts.map(count => `<button type="button" class="count-chip" data-card-count="${count}" aria-pressed="${count === testSize()}">${count}</button>`).join('');
@@ -184,12 +208,16 @@
       const p = selected();
       state.cardCount = testSize();
       save();
-      const entries = pool(p), progress = p.progress || {}, now = Date.now();
-      const missed = shuffled(entries.filter(w => progress[w.id]?.needsReview));
+      const entries = pool(p), progress = state.progress, now = Date.now();
+      const testNumber = state.testNumber || 0;
+      const missed = shuffled(entries.filter(w => progress[w.id]?.needsReview &&
+        (progress[w.id].reviewAfterTest ?? testNumber) <= testNumber));
       const due = shuffled(entries.filter(w => !progress[w.id]?.needsReview && progress[w.id] && progress[w.id].due <= now));
       const fresh = shuffled(entries.filter(w => !progress[w.id]));
       const later = shuffled(entries.filter(w => progress[w.id] && !progress[w.id].needsReview && progress[w.id].due > now));
-      cards = [...missed, ...due, ...fresh, ...later].slice(0, state.cardCount);
+      // Reserve space for eligible missed words, then randomize their positions
+      // so they do not predictably appear at the start of a test.
+      cards = shuffled([...missed, ...due, ...fresh, ...later].slice(0, state.cardCount));
       sessionPresetId = p.id;
       index = 0; revealed = false;
       statsDialog.close();
@@ -203,18 +231,21 @@
     function rate(good) {
       const w = cards[index], preset = state.presets.find(p => p.id === sessionPresetId);
       if (!w || !preset || !revealed) return;
-      const old = preset.progress[w.id] || { streak:0, correct:0, incorrect:0, mastery:0 };
+      const old = state.progress[w.id] || { streak:0, correct:0, incorrect:0, mastery:0 };
       const streak = good ? old.streak + 1 : 0;
       const prior = old.mastery ?? Math.min(.8, old.correct / 8) * Math.min(1, old.streak / 5);
       const intervals = [0,1,3,7,14,30,60];
-      pendingProgress[w.id] = { streak, correct: old.correct + Number(good), incorrect: old.incorrect + Number(!good), mastery: good ? prior + .2 * (1 - prior) : prior * .45, needsReview: !good, due: good ? Date.now() + intervals[Math.min(streak,6)] * DAY : Date.now() };
+      pendingProgress[w.id] = { streak, correct: old.correct + Number(good), incorrect: old.incorrect + Number(!good), mastery: good ? prior + .2 * (1 - prior) : prior * .45, needsReview: !good, due: good ? Date.now() + intervals[Math.min(streak,6)] * DAY : Date.now(), reviewAfterTest: good ? undefined : (state.testNumber || 0) + 1 + Math.floor(Math.random() * 2) };
       sessionResults.push({ correct:good });
       index++; revealed = false;
       if (index === cards.length) {
-        const previous = preset.progress;
-        preset.progress = { ...previous, ...pendingProgress };
+        const previous = state.progress;
+        const previousTestNumber = state.testNumber;
+        state.progress = { ...previous, ...pendingProgress };
+        state.testNumber = (state.testNumber || 0) + 1;
         try { save(); } catch {
-          preset.progress = previous;
+          state.progress = previous;
+          state.testNumber = previousTestNumber;
           index--; revealed = true; sessionResults.pop();
           window.alert('Your completed test could not be saved. Free up browser storage, then mark the last answer again to retry.');
           return;
@@ -311,17 +342,24 @@
       const selectedLevels = levels.filter(n => $(`level${n}`).checked), name = $('presetName').value.trim();
       if (!name || !selectedLevels.length) { $('formError').textContent = 'Give this preset a name and choose at least one level.'; return; }
       const id = `preset-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
-      state.presets.push({ id, name, levels:selectedLevels, progress:{} }); state.activeId = id; save();
+      state.presets.push({ id, name, levels:selectedLevels }); state.activeId = id; save();
       $('presetForm').reset(); $('presetForm').classList.add('hidden'); $('formError').textContent = ''; renderHome();
     };
     for (const id of ['strokeToggle','strokeInTest']) $(id).onchange = e => { state.stroke = e.target.checked; save(); $('strokeToggle').checked = state.stroke; $('strokeInTest').checked = state.stroke; if (!$('test').classList.contains('hidden')) renderTest(); };
     $('export').onclick = () => { const blob = new Blob([JSON.stringify(state,null,2)], { type:'application/json' }), a = document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='MyHanzi-backup.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); };
-    $('import').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (data.version !== 2 || !Array.isArray(data.presets) || !data.presets.length || data.presets.some(p => !p.id || !Array.isArray(p.levels) || !p.progress || typeof p.progress !== 'object')) throw Error(); state=data; ensureLevelPresets(); save(); renderHome(); } catch { alert('Could not read this backup file.'); } e.target.value=''; };
+    $('import').onchange = async e => { const file = e.target.files[0]; if (!file) return; try { const data = JSON.parse(await file.text()); if (![2,3].includes(data.version) || !Array.isArray(data.presets) || !data.presets.length || data.presets.some(p => !p.id || !Array.isArray(p.levels)) || (data.version === 2 && data.presets.some(p => !p.progress || typeof p.progress !== 'object')) || (data.version === 3 && (!data.progress || typeof data.progress !== 'object'))) throw Error(); state=data; ensureSharedProgress(); ensureLevelPresets(); save(); renderHome(); } catch { alert('Could not read this backup file.'); } e.target.value=''; };
     document.addEventListener('keydown', e => { if ($('test').classList.contains('hidden') || e.target instanceof HTMLInputElement || !cards[index]) return; if (e.code==='Space' && !revealed) { e.preventDefault(); revealed=true; renderTest(); } else if (revealed && e.key==='1') rate(false); else if (revealed && e.key==='2') rate(true); });
     renderHome();
     if (studyLevel) start();
   }
   function initVocabulary() {
+    const browseCount = $('browseCount');
+    const levelActions = document.createElement('div');
+    const startLevelTest = document.createElement('a');
+    levelActions.className = 'vocab-level-actions';
+    startLevelTest.className = 'primary';
+    levelActions.append(browseCount, startLevelTest);
+    document.querySelector('.vocab-head').append(levelActions);
     const characters = entries => new Set(entries.flatMap(w => [...w.hanzi].filter(c => /\p{Script=Han}/u.test(c))));
     for (const [i, tile] of [...document.querySelectorAll('.vocab-card')].entries()) {
       const band = levels[i];
@@ -329,23 +367,19 @@
       const introduced = words.filter(w => w.level === band);
       const earlier = characters(words.filter(w => w.level < band));
       const newCharacters = [...characters(introduced)].filter(c => !earlier.has(c)).length;
-      const preset = state.presets.find(p => p.builtinLevel === band);
-      const progress = preset?.progress || {};
-      const { reviewed, familiarity, percent } = levelProgress(entries, progress);
-      tile.innerHTML = `<span class="eyebrow">2026 syllabus</span><strong>${levelLabel(band)}</strong><span class="vocab-metrics"><span><b>${entries.length.toLocaleString()}</b> Total words</span><span><b>${introduced.length.toLocaleString()}</b> New words</span><span><b>${newCharacters.toLocaleString()}</b> New characters</span></span><span class="level-progress"><span class="progress-heading">Progress <b>${percent}%</b></span><progress max="100" value="${percent}" aria-label="${levelLabel(band)} progress">${percent}%</progress><span class="progress-detail">${reviewed.toLocaleString()} / ${entries.length.toLocaleString()} reviewed · ${(familiarity * 100).toFixed(1)}% familiarity</span></span>`;
+      const progress = state.progress;
+      const { reviewed, familiarity, percent } = levelProgress(introduced, progress);
+      tile.innerHTML = `<span class="eyebrow">2026 syllabus</span><strong>${levelLabel(band)}</strong><span class="vocab-metrics"><span><b>${entries.length.toLocaleString()}</b> Total words</span><span><b>${introduced.length.toLocaleString()}</b> New words</span><span><b>${newCharacters.toLocaleString()}</b> New characters</span></span><span class="level-progress"><span class="progress-heading">Progress <b>${percent}%</b></span><progress max="100" value="${percent}" aria-label="${levelLabel(band)} progress">${percent}%</progress><span class="progress-detail">${reviewed.toLocaleString()} / ${introduced.length.toLocaleString()} level words reviewed · ${(familiarity * 100).toFixed(1)}% familiarity</span></span>`;
     }
     let level = null, animationToken = 0, popupWriterPromise = null;
     let popupWriters = [];
-    const picker = $('progressPreset');
-    picker.innerHTML = state.presets.map(p => `<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('');
-    picker.value = active().id;
-    function showLevel(n) { level=n; $('vocabOverview').classList.add('hidden'); $('vocabDetail').classList.remove('hidden'); $('levelTitle').textContent=levelLabel(n); $('search').value=''; $('wordPreview').close(); document.title = `${levelLabel(n)} Vocabulary · MyHanzi`; renderGrid(); }
+    function showLevel(n) { level=n; $('vocabOverview').classList.add('hidden'); $('vocabDetail').classList.remove('hidden'); $('levelTitle').textContent=levelLabel(n); $('search').value=''; $('wordPreview').close(); startLevelTest.href = `/study/hsk-${n === 7 ? '7-9' : n}/`; startLevelTest.textContent = `Start ${levelLabel(n)} test`; document.title = `${levelLabel(n)} Vocabulary · MyHanzi`; renderGrid(); }
     function renderGrid() {
       if (!level) return;
-      const p = state.presets.find(x => x.id === picker.value) || active(), q = norm($('search').value.trim());
+      const q = norm($('search').value.trim());
       const items = words.filter(w => w.level <= level && (!q || norm(`${w.hanzi} ${w.pinyin} ${w.meaning}`).includes(q))).sort((a,b) => norm(a.pinyin).localeCompare(norm(b.pinyin)) || a.hanzi.localeCompare(b.hanzi));
       $('browseCount').textContent = `${items.length.toLocaleString()} of ${words.filter(w => w.level <= level).length.toLocaleString()} words · ${level === 7 ? 'HSK 7–9 shared list, including HSK 1–6' : `includes HSK 1–${level}`}`;
-      $('grid').innerHTML = items.length ? items.map(w => `<button class="tile" data-word="${escape(w.id)}" style="background:${shade(colorStep(p.progress[w.id]))}" aria-label="${escape(w.hanzi)}, ${escape(w.pinyin)}">${escape(w.hanzi)}<small>${escape(w.pinyin)}</small></button>`).join('') : '<div class="empty">No matching words.</div>';
+      $('grid').innerHTML = items.length ? items.map(w => `<button class="tile" data-word="${escape(w.id)}" style="background:${shade(colorStep(state.progress[w.id]))}" aria-label="${escape(w.hanzi)}, ${escape(w.pinyin)}">${escape(w.hanzi)}<small>${escape(w.pinyin)}</small></button>`).join('') : '<div class="empty">No matching words.</div>';
     }
     $('grid').addEventListener('click', e => {
       const tile = e.target.closest('[data-word]');
@@ -426,10 +460,9 @@
     const route = location.pathname.match(/^\/vocabulary\/hsk-([1-9]|7-9)(?:\/|\/index\.html)?$/);
     if (route) {
       const band = route[1] === '7-9' ? 7 : Math.min(7, Number(route[1]));
-      picker.value = state.presets.find(p => p.builtinLevel === band)?.id || active().id;
       showLevel(band);
     }
-    $('search').oninput=renderGrid; picker.onchange=renderGrid;
+    $('search').oninput=renderGrid;
     const swatches = Array.from({length:10},(_,i)=>`<i style="background:${shade(i)}" title="Familiarity ${i+1} of 10"></i>`).join('');
     for (const id of ['swatchesTop', 'swatches']) $(id).innerHTML = swatches;
   }
