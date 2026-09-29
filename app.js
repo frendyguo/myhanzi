@@ -360,6 +360,10 @@
     startLevelTest.className = 'primary';
     levelActions.append(browseCount, startLevelTest);
     document.querySelector('.vocab-head').append(levelActions);
+    const levelOnlyLabel = document.createElement('label');
+    levelOnlyLabel.className = 'switch-line vocab-level-filter';
+    levelOnlyLabel.innerHTML = '<input type="checkbox" id="levelOnly"> Only words from this HSK level';
+    document.querySelector('.vocab-toolbar').append(levelOnlyLabel);
     const characters = entries => new Set(entries.flatMap(w => [...w.hanzi].filter(c => /\p{Script=Han}/u.test(c))));
     for (const [i, tile] of [...document.querySelectorAll('.vocab-card')].entries()) {
       const band = levels[i];
@@ -377,8 +381,11 @@
     function renderGrid() {
       if (!level) return;
       const q = norm($('search').value.trim());
-      const items = words.filter(w => w.level <= level && (!q || norm(`${w.hanzi} ${w.pinyin} ${w.meaning}`).includes(q))).sort((a,b) => norm(a.pinyin).localeCompare(norm(b.pinyin)) || a.hanzi.localeCompare(b.hanzi));
-      $('browseCount').textContent = `${items.length.toLocaleString()} of ${words.filter(w => w.level <= level).length.toLocaleString()} words · ${level === 7 ? 'HSK 7–9 shared list, including HSK 1–6' : `includes HSK 1–${level}`}`;
+      const levelOnly = $('levelOnly').checked;
+      const visiblePool = words.filter(w => levelOnly ? w.level === level : w.level <= level);
+      const items = visiblePool.filter(w => !q || norm(`${w.hanzi} ${w.pinyin} ${w.meaning}`).includes(q)).sort((a,b) => norm(a.pinyin).localeCompare(norm(b.pinyin)) || a.hanzi.localeCompare(b.hanzi));
+      const scope = levelOnly ? `${levelLabel(level)} words only` : level === 7 ? 'HSK 7–9 shared list, including HSK 1–6' : `includes HSK 1–${level}`;
+      $('browseCount').textContent = `${items.length.toLocaleString()} of ${visiblePool.length.toLocaleString()} words · ${scope}`;
       $('grid').innerHTML = items.length ? items.map(w => `<button class="tile" data-word="${escape(w.id)}" style="background:${shade(colorStep(state.progress[w.id]))}" aria-label="${escape(w.hanzi)}, ${escape(w.pinyin)}">${escape(w.hanzi)}<small>${escape(w.pinyin)}</small></button>`).join('') : '<div class="empty">No matching words.</div>';
     }
     $('grid').addEventListener('click', e => {
@@ -463,6 +470,7 @@
       showLevel(band);
     }
     $('search').oninput=renderGrid;
+    $('levelOnly').onchange=renderGrid;
     const swatches = Array.from({length:10},(_,i)=>`<i style="background:${shade(i)}" title="Familiarity ${i+1} of 10"></i>`).join('');
     for (const id of ['swatchesTop', 'swatches']) $(id).innerHTML = swatches;
   }

@@ -94,3 +94,4 @@ a.choice{display:block;text-decoration:none}
 .choice-metrics small{font-size:.75rem;margin:0}
 .choice:focus-visible{outline:3px solid #26775d;outline-offset:3px}
 @media(max-width:480px){.choice{padding:18px}.choice.active{padding:17px}.choice .choice-metrics{gap:6px 14px}.choice .choice-status{font-size:.7rem}}
+.vocab-toolbar .search{flex:1 1 320px;width:auto;margin:0}.vocab-level-filter{flex:0 0 auto}
